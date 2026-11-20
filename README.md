@@ -25,3 +25,10 @@ bun install
 bun run check
 bun start   # serves MCP on stdio
 ```
+
+## iPhone
+
+`ios/` is Printing for iPhone (SwiftUI, XcodeGen). It reaches this spur through Switch's core, calling the
+same tools an agent does. `sh ios/build.sh` installs it on a paired iPhone; `--simulator` builds it
+for the simulator. Team, bundle id prefix and the core's address come from the environment or a
+`deploy.local` (`ios_team`, `ios_bundle_prefix`, `ios_core`), never the source.
