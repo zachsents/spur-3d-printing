@@ -610,7 +610,7 @@ const overview: WidgetDef = {
   resource: "ui://printers/overview",
   space: PRINTING,
   spaceName: "Printing",
-  size: { aspect: "wide", min: { cols: 4, rows: 2 }, preferred: { cols: 8, rows: 3 }, grows: true },
+  size: { aspect: "wide", min: { cols: 4, rows: 3 }, preferred: { cols: 8, rows: 3 }, grows: true },
   tool: "board",
   refresh: [
     StateChanged.type,
