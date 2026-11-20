@@ -666,7 +666,7 @@ const cameraWidget = (p: Printer): WidgetDef => ({
   size: {
     aspect: "wide",
     ratio: 16 / 9,
-    min: { cols: 3, rows: 2 },
+    min: { cols: 2, rows: 1 },
     preferred: { cols: 6, rows: 3 },
     grows: true,
   },
