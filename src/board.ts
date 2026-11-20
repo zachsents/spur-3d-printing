@@ -58,8 +58,8 @@ const markOf = (v: View) => {
   if (v.phase === "printing" || v.phase === "preparing") {
     return "running"
   }
-  // Paused, or done with the part still on the bed: both wait on the user.
-  if (v.phase === "paused" || v.phase === "finished") {
+  // Paused waits on the user; finished is idle, as Bambu reports it until the next job.
+  if (v.phase === "paused") {
     return "needsYou"
   }
   if (v.phase === "failed" || v.phase === "offline") {
