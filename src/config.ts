@@ -2,7 +2,7 @@
 // $PRINTERS_CONFIG), with BAMBU_HOST, BAMBU_SERIAL and BAMBU_ACCESS_CODE, and NAME for what to call
 // it. Read fresh on every connect: the CLI rewrites the host when
 // DHCP moves a printer. The access code stays in this process; it goes nowhere but the printer.
-import { existsSync, readdirSync, readFileSync } from "node:fs"
+import { existsSync, readdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 import path from "node:path"
 
@@ -81,4 +81,19 @@ export const configured = (): Printer[] => {
         return []
       }
     })
+}
+
+/** Sets what a printer is called: NAME in its env file, its other lines as they were. */
+export const writeName = (id: string, name: string) => {
+  const file = path.join(CONFIG_DIR, `${id}.env`)
+  const lines = readFileSync(file, "utf-8").replace(/\n$/u, "").split("\n")
+  const at = lines.findIndex((l) => /^\s*NAME\s*=/u.test(l))
+  if (at === -1) {
+    lines.push(`NAME=${name}`)
+  } else {
+    lines[at] = `NAME=${name}`
+  }
+  const tmp = `${file}.tmp`
+  writeFileSync(tmp, `${lines.join("\n")}\n`, { mode: 0o600 })
+  renameSync(tmp, file)
 }

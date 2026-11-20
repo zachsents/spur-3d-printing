@@ -12,7 +12,7 @@ Ask Switch's agent to install `github:zachsents/spur-3d-printing`, or add it in 
 ## Setup
 
 - One `<id>.env` per printer in `~/.config/bambu` (or `$PRINTERS_CONFIG`): `BAMBU_HOST`,
-  `BAMBU_SERIAL`, `BAMBU_ACCESS_CODE`, and `NAME` for what to call it.
+  `BAMBU_SERIAL`, `BAMBU_ACCESS_CODE`, and `NAME` for what to call it (rename sets it).
 - The `bambu` CLI on `PATH` (or `$PRINTERS_BAMBU`) for slicing and sending.
 - Commands reach real printers only with `PRINTERS_COMMANDS=on`; `PRINTERS_SIM=on` runs two
   simulated printers instead.

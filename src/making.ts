@@ -69,6 +69,8 @@ const slice = tool(
       cosmetic: Schema.optionalKey(Schema.Boolean),
       /** Bambu's full start routine (purge): after a jam, a swap or a failed first layer. */
       fullStart: Schema.optionalKey(Schema.Boolean),
+      /** Heat soak minutes (ASA/ABS warp), as soak adds. */
+      soak: Schema.optionalKey(Schema.Finite),
       supportFilament: Schema.optionalKey(Schema.Finite),
       supportInterfaceFilament: Schema.optionalKey(Schema.Finite),
       /** Raw process (set) and filament (fset) overrides, KEY=VALUE. */
@@ -91,6 +93,7 @@ const slice = tool(
       ...(input.walls === undefined ? [] : ["--walls", String(input.walls)]),
       ...(input.cosmetic === true ? ["--cosmetic"] : []),
       ...(input.fullStart === true ? ["--full-start"] : []),
+      ...(input.soak === undefined ? [] : ["--soak", String(Math.round(input.soak))]),
       ...(input.supportFilament === undefined
         ? []
         : ["--support-filament", String(input.supportFilament)]),
@@ -128,6 +131,38 @@ const check = tool(
       ["check", input.file, ...(input.maxZ === undefined ? [] : ["--max-z", String(input.maxZ)])],
       5 * MINUTE,
     ),
+)
+
+const SOAKED = /-soak\d+$/u
+
+const soak = tool(
+  "soak",
+  {
+    description:
+      "Give a sliced plate a bed heat soak, for ASA and ABS warp: the bed holds its first-layer temperature `minutes` (1-120; 0 takes a soak out) right after it heats, before leveling and the first layer. Writes a copy (`out`, default <name>-soak<minutes>.gcode.3mf beside it) with its checksum and print time counting the soak, then checks it. slice's soak does the same while slicing.",
+    input: Schema.Struct({
+      file: Schema.String,
+      minutes: Schema.Finite,
+      out: Schema.optionalKey(Schema.String),
+    }),
+  },
+  (input) =>
+    Effect.gen(function* soaking() {
+      const minutes = Math.round(input.minutes)
+      if (minutes < 0 || minutes > 120) {
+        return yield* Effect.fail(new Error("A soak is 0 to 120 minutes"))
+      }
+      if (!input.file.endsWith(".gcode.3mf")) {
+        return yield* Effect.fail(new Error(`${input.file} isn't a sliced plate (.gcode.3mf)`))
+      }
+      const stem = input.file.slice(0, -".gcode.3mf".length).replace(SOAKED, "")
+      const out = input.out ?? `${stem}${minutes > 0 ? `-soak${minutes}` : ""}.gcode.3mf`
+      const soaked = yield* run(["soak", input.file, String(minutes), "--out", out], 10 * MINUTE)
+      const checked = yield* run(["check", out], 5 * MINUTE).pipe(
+        Effect.catch((error: Error) => Effect.succeed({ said: error.message.split("\n") })),
+      )
+      return { file: out, said: soaked.said, check: checked.said }
+    }),
 )
 
 const inspect = tool(
@@ -218,29 +253,6 @@ const light = tool(
   (input) => device(["-p", input.printer, "light", input.on ? "on" : "off"]),
 )
 
-const heat = tool(
-  "heat",
-  {
-    description:
-      "Set the nozzle (and bed) temperature, or 0 for off. Mid-print it corrects a wrong temperature live; say what changed and why.",
-    input: Schema.Struct({
-      printer: Schema.String,
-      nozzle: Schema.Finite,
-      bed: Schema.optionalKey(Schema.Finite),
-    }),
-  },
-  (input) =>
-    input.nozzle === 0 && (input.bed ?? 0) === 0
-      ? device(["-p", input.printer, "cool"])
-      : device([
-          "-p",
-          input.printer,
-          "heat",
-          String(Math.round(input.nozzle)),
-          ...(input.bed === undefined ? [] : ["--bed", String(Math.round(input.bed))]),
-        ]),
-)
-
 const extrude = tool(
   "extrude",
   {
@@ -283,12 +295,12 @@ export const makingTools = [
   slice,
   plate,
   check,
+  soak,
   inspect,
   timelapse,
   discover,
   speed,
   light,
-  heat,
   extrude,
   rules,
 ]

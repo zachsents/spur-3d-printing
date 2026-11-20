@@ -24,6 +24,25 @@ export const jobControl = (seq: string, action: "pause" | "resume" | "stop"): Re
   body: { sequence_id: seq, command: action },
 })
 
+/** G-code lines for the printer to run now, as Bambu Studio's console sends them. */
+export const gcode = (seq: string, lines: readonly string[]): Request => ({
+  section: "print",
+  body: { sequence_id: seq, command: "gcode_line", param: `${lines.join("\n")}\n` },
+})
+
+/** The nozzle's (M104) and bed's (M140) targets in °C; 0 turns a heater off. */
+export const temps = (seq: string, nozzle: number, bed?: number): Request =>
+  gcode(seq, [`M104 S${nozzle}`, ...(bed === undefined ? [] : [`M140 S${bed}`])])
+
+/**
+ * Unloads the external spool with plain G-code rather than the printer's own routine, which cools
+ * the nozzle and parks until the filament is pulled, ignoring heat meanwhile: waits for `temp`,
+ * pushes a little to soften the tip, then pulls it up past the gears and the filament sensor,
+ * leaving the heaters where they were.
+ */
+export const unload = (seq: string, temp: number): Request =>
+  gcode(seq, [`M109 S${temp}`, "M83", "G1 E5 F300", "G1 E-30 F1800", "G1 E-70 F600"])
+
 export interface Preset {
   /** Bambu Studio's filament id (tray_info_idx): GFL99 for Generic PLA. */
   readonly idx: string

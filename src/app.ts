@@ -13,7 +13,7 @@ import { Context, Effect, Layer, Schema } from "effect"
 import { answer, AppEvents, defineApp, mcpApp, surface, SWITCH_CATALOG, tool } from "spur-kit"
 import type { Draft, WidgetDef } from "spur-kit"
 import { Camera, tlsEye } from "./camera.ts"
-import { COMMANDS, configured, SIM } from "./config.ts"
+import { COMMANDS, configured, SIM, writeName } from "./config.ts"
 import type { Printer } from "./config.ts"
 import { presetFor } from "./filaments.ts"
 import { ftpsCard } from "./files.ts"
@@ -21,7 +21,7 @@ import type { Card } from "./files.ts"
 import { Link, mqttDial } from "./link.ts"
 import { noActivities } from "./live.ts"
 import type { LiveActivities, PrintActivity } from "./live.ts"
-import { filamentSetting, jobControl, projectFile } from "./payloads.ts"
+import { filamentSetting, jobControl, projectFile, temps, unload } from "./payloads.ts"
 import { SIM_PRINTERS, simCard, simDial, simEye } from "./sim.ts"
 import {
   EVENTS,
@@ -97,7 +97,8 @@ const loadTexts = () => {
 }
 
 interface Entry {
-  readonly printer: Printer
+  /** Replaced when it's renamed. */
+  printer: Printer
   readonly link: Link
   readonly camera: Camera
 }
@@ -117,12 +118,39 @@ const activityOf = (v: View): PrintActivity => ({
   endsAt: v.endsAt,
 })
 
+// ── Heat holds ──
+
+/** How long a heat hold lasts unless it's given more. */
+export const HOLD_MS = 45 * 60_000
+/** A hold's targets are set again only once they've been off this long, so a print starting isn't
+ * fought, and never more often than every five seconds. */
+const SETTLE_MS = 2000
+const RESEND_MS = 5000
+/** The printer's own filament routines' stages (changing, unloading, loading): a hold waits. */
+const FILAMENT_STAGES = new Set([4, 22, 24])
+
+/**
+ * Heat kept on an idle printer: it drops an idle target by itself, so the hold sets it again
+ * until it runs out (then cools the printer), a job starts, or it's let go.
+ */
+export interface Hold {
+  readonly nozzle: number
+  readonly bed?: number
+  until: number
+  slippedAt: number | undefined
+  sentAt: number
+}
+
+const target = (raw: Raw, key: string) => (typeof raw[key] === "number" ? Math.round(raw[key]) : -1)
+
 export class Printers extends Context.Service<
   Printers,
   {
     readonly entries: readonly Entry[]
     readonly view: (e: Entry) => View
     readonly card: Card
+    /** Heat holds, by printer id. */
+    readonly holds: Map<string, Hold>
   }
 >()("switch/printers/Printers") {
   static readonly layer = (options: { readonly activities?: LiveActivities } = {}) =>
@@ -143,7 +171,58 @@ export class Printers extends Context.Service<
           )
           return { printer, link, camera }
         })
-        const view = (e: Entry) => viewOf(e.printer, e.link.raw, e.link.online(), texts, Date.now())
+        const holds = new Map<string, Hold>()
+        const view = (e: Entry): View => {
+          const v = viewOf(e.printer, e.link.raw, e.link.online(), texts, Date.now())
+          const h = holds.get(e.printer.id)
+          return h
+            ? {
+                ...v,
+                hold: {
+                  nozzle: h.nozzle,
+                  ...(h.bed === undefined ? {} : { bed: h.bed }),
+                  until: h.until,
+                },
+              }
+            : v
+        }
+
+        /** Keeps a printer's hold: its targets set again when they slip, the printer cooled when it runs out. */
+        const keep = (e: Entry) => {
+          const { id } = e.printer
+          const h = holds.get(id)
+          const { link } = e
+          if (!h || !link.online()) {
+            return
+          }
+          const { raw } = link
+          if (isActive(stateOf(raw))) {
+            // A job took over the heaters: the hold is done.
+            holds.delete(id)
+            return
+          }
+          if (typeof raw.stg_cur === "number" && FILAMENT_STAGES.has(raw.stg_cur)) {
+            return
+          }
+          const now = Date.now()
+          if (now >= h.until) {
+            holds.delete(id)
+            link.send(temps(link.nextSeq(), 0, h.bed === undefined ? undefined : 0)).catch(ignore)
+            return
+          }
+          const slipped =
+            target(raw, "nozzle_target_temper") !== h.nozzle ||
+            (h.bed !== undefined && target(raw, "bed_target_temper") !== h.bed)
+          if (!slipped) {
+            h.slippedAt = undefined
+            return
+          }
+          h.slippedAt ??= now
+          if (now - h.slippedAt >= SETTLE_MS && now - h.sentAt >= RESEND_MS) {
+            h.sentAt = now
+            link.send(temps(link.nextSeq(), h.nozzle, h.bed)).catch(ignore)
+          }
+        }
 
         const seen = new Map<string, Seen>()
         /** What changed since this printer's last report, as events and the print's activity. */
@@ -167,8 +246,14 @@ export class Printers extends Context.Service<
           e.link.subscribe(() => {
             e.camera.poke()
             step(e)
+            keep(e)
           })
         }
+        const keeper = setInterval(() => {
+          for (const e of entries) {
+            keep(e)
+          }
+        }, 2000)
         // Offline only counts after GONE_MS, which no report marks.
         const ticker = setInterval(() => {
           for (const e of entries) {
@@ -178,13 +263,14 @@ export class Printers extends Context.Service<
         yield* Effect.addFinalizer(() =>
           Effect.sync(() => {
             clearInterval(ticker)
+            clearInterval(keeper)
             for (const e of entries) {
               e.camera.stop()
               e.link.close()
             }
           }),
         )
-        return { entries, view, card: SIM ? simCard : ftpsCard }
+        return { entries, view, card: SIM ? simCard : ftpsCard, holds }
       }),
     )
 }
@@ -564,6 +650,185 @@ const print = tool(
     }),
 )
 
+/** The P1's limits, from Bambu Studio's printer profile. */
+const MAX_NOZZLE_C = 300
+const MAX_BED_C = 110
+/** The nozzle won't push filament below this. */
+const MIN_EXTRUDE_C = 190
+
+/** A printer that's online and takes commands, or why not. */
+const commandable = (printers: typeof Printers.Service, name: string) =>
+  Effect.gen(function* checking() {
+    const e = yield* find(printers, name)
+    if (!e.link.commands) {
+      return yield* Effect.fail(new Error("Commands are off"))
+    }
+    if (!e.link.online()) {
+      return yield* Effect.fail(new Error(`${e.printer.name} is offline`))
+    }
+    return e
+  })
+
+const heat = tool(
+  "heat",
+  {
+    description:
+      "Set the nozzle (and bed) temperature in °C; nozzle 0 with no bed (or bed 0) turns both off and ends any hold. On an idle printer it holds the heat for `minutes` (default 45), setting it again as the printer lets it drop, until it runs out (then it cools), a job starts, or hold releases it. Mid-print it corrects a wrong temperature live; say what changed and why.",
+    input: Schema.Struct({
+      printer: Schema.String,
+      nozzle: Schema.Finite,
+      bed: Schema.optionalKey(Schema.Finite),
+      minutes: Schema.optionalKey(Schema.Finite),
+    }),
+  },
+  (input) =>
+    Effect.gen(function* heating() {
+      const printers = yield* Printers
+      const e = yield* commandable(printers, input.printer)
+      const { link } = e
+      const { id } = e.printer
+      const nozzle = Math.round(input.nozzle)
+      const bed = input.bed === undefined ? undefined : Math.round(input.bed)
+      if (
+        nozzle < 0 ||
+        nozzle > MAX_NOZZLE_C ||
+        (bed !== undefined && (bed < 0 || bed > MAX_BED_C))
+      ) {
+        return yield* Effect.fail(
+          new Error(`The nozzle goes to ${MAX_NOZZLE_C}° and the bed to ${MAX_BED_C}°`),
+        )
+      }
+      const cool = nozzle === 0 && (bed ?? 0) === 0
+      const printing = isActive(stateOf(link.raw))
+      const sent = cool ? { nozzle: 0, bed: 0 } : { nozzle, bed }
+      if (cool || printing) {
+        printers.holds.delete(id)
+      } else {
+        const minutes = Math.min(180, Math.max(1, input.minutes ?? HOLD_MS / 60_000))
+        const now = Date.now()
+        printers.holds.set(id, {
+          nozzle,
+          ...(bed === undefined ? {} : { bed }),
+          until: now + minutes * 60_000,
+          slippedAt: undefined,
+          sentAt: now,
+        })
+      }
+      yield* attempt(async () => {
+        await sendAndConfirm(
+          link,
+          temps(link.nextSeq(), sent.nozzle, sent.bed),
+          (r) =>
+            target(r, "nozzle_target_temper") === sent.nozzle &&
+            (sent.bed === undefined || target(r, "bed_target_temper") === sent.bed),
+          10_000,
+        )
+      })
+      return printers.view(e)
+    }),
+)
+
+const hold = tool(
+  "hold",
+  {
+    description:
+      "A printer's heat hold (heat starts one). extend: `minutes` more (default 45). release: stop holding; the heaters stay where they are and the printer lets them fall on its own. heat 0 cools it now.",
+    input: Schema.Struct({
+      printer: Schema.String,
+      action: Schema.Literals(["extend", "release"]),
+      minutes: Schema.optionalKey(Schema.Finite),
+    }),
+  },
+  (input) =>
+    Effect.gen(function* holding() {
+      const printers = yield* Printers
+      const e = yield* find(printers, input.printer)
+      const h = printers.holds.get(e.printer.id)
+      if (!h) {
+        return yield* Effect.fail(new Error(`${e.printer.name} isn't holding any heat`))
+      }
+      if (input.action === "release") {
+        printers.holds.delete(e.printer.id)
+      } else {
+        const minutes = Math.min(180, Math.max(1, input.minutes ?? HOLD_MS / 60_000))
+        h.until = Math.max(h.until, Date.now()) + minutes * 60_000
+      }
+      return printers.view(e)
+    }),
+)
+
+const unloadTool = tool(
+  "unload",
+  {
+    description:
+      "Unload the external spool's filament on an idle printer: wait for the nozzle to be hot, push a little to soften the tip, then pull it up past the gears so it can be drawn out at the back. Heat it first (190° or more; the filament's own temperature).",
+    input: which,
+  },
+  (input) =>
+    Effect.gen(function* unloading() {
+      const printers = yield* Printers
+      const e = yield* commandable(printers, input.printer)
+      const { link } = e
+      const v = printers.view(e)
+      if (isActive(v.state)) {
+        return yield* Effect.fail(new Error(`${e.printer.name} is printing`))
+      }
+      const fed = v.slots.find((s) => s.active)
+      if (fed) {
+        return yield* Effect.fail(new Error(`${e.printer.name} is fed from the AMS (${fed.slot})`))
+      }
+      const temp = printers.holds.get(e.printer.id)?.nozzle ?? v.nozzleTarget
+      if (temp < MIN_EXTRUDE_C) {
+        return yield* Effect.fail(
+          new Error(`Heat ${e.printer.name} first: unloading needs ${MIN_EXTRUDE_C}°`),
+        )
+      }
+      yield* attempt(async () => {
+        await sendAndConfirm(
+          link,
+          unload(link.nextSeq(), temp),
+          (r) => r.hw_switch_state === 0,
+          Math.max(40_000, (temp - v.nozzle) * 1000),
+        )
+      })
+      return printers.view(e)
+    }),
+)
+
+const rename = tool(
+  "rename",
+  {
+    description: "Rename a printer. Names are unique, whatever the case.",
+    input: Schema.Struct({ printer: Schema.String, name: Schema.String }),
+  },
+  (input) =>
+    Effect.gen(function* renaming() {
+      const printers = yield* Printers
+      const e = yield* find(printers, input.printer)
+      const name = input.name.trim()
+      if (name === "" || /[\r\n]/u.test(name)) {
+        return yield* Effect.fail(new Error("A printer needs a name on one line"))
+      }
+      const lower = name.toLowerCase()
+      const taken = printers.entries.find(
+        (x) => x !== e && (x.printer.name.toLowerCase() === lower || x.printer.id === lower),
+      )
+      if (taken) {
+        return yield* Effect.fail(new Error(`Another printer is called ${name}`))
+      }
+      if (!SIM) {
+        yield* Effect.try({
+          try: () => {
+            writeName(e.printer.id, name)
+          },
+          catch: (error) => (error instanceof Error ? error : new Error(String(error))),
+        })
+      }
+      e.printer = { ...e.printer, name }
+      return printers.view(e)
+    }),
+)
+
 const num = (r: Raw, key: string) => (typeof r[key] === "number" ? r[key] : 0)
 
 const GOALS = ["started", "printing", "done", "layer", "percent", "change"] as const
@@ -685,6 +950,7 @@ export const printersApp = defineApp<Printers>({
     "Bambu printers on the LAN, as status lists them (model, external spool, AMS slots A1-A4). Name the printer whenever you report on one.",
     "Designing a part to print: read rules (design) first.",
     "Printing: inspect STLs made elsewhere and pick the bed face; slice; read the summary (time, filament_g, objects, bed_C) and every check WARNING, and say the time; confirm the printer's bed is clear (FINISH means the last part is likely still on it); print (dryRun first to see the plan); wait until printing. Every print records a timelapse (timelapse list).",
+    "Swapping the external spool: heat to the old filament's temperature, unload, have the new one fed in, extrude until it runs clean, then set_filament.",
     "After a spool swap, set_filament on that slot or the external spool right away: print matches the plate against what the printer reports.",
   ].join("\n"),
   tools: [
@@ -698,6 +964,10 @@ export const printersApp = defineApp<Printers>({
     stop,
     print,
     wait,
+    heat,
+    hold,
+    unloadTool,
+    rename,
     ...makingTools,
   ],
   events: EVENTS,

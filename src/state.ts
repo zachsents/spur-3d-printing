@@ -263,6 +263,8 @@ export interface View {
   readonly slots: readonly Slot[]
   readonly errors: readonly Alert[]
   readonly light?: boolean
+  /** The heat it's holding while idle, until `until` (ms). */
+  readonly hold?: { readonly nozzle: number; readonly bed?: number; readonly until: number }
 }
 
 const spoolOf = (raw: Raw) => {

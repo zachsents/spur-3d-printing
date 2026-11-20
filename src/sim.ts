@@ -174,10 +174,37 @@ class SimPrinter {
         this.start(section, body)
         return
       }
+      case "gcode_line": {
+        this.gcode(String(body.param))
+        this.reply(section, body, true)
+        return
+      }
       default: {
         this.reply(section, body, false, "unknown command")
       }
     }
+  }
+
+  /** Heater targets (M104, M109, M140) reached at once, and a pull (a long negative E) unloads. */
+  private gcode(text: string) {
+    const delta: Body = {}
+    for (const line of text.split("\n")) {
+      const t = /^M1(?<h>04|09|40) S(?<v>\d+)/u.exec(line)?.groups
+      if (t?.v !== undefined) {
+        const v = Number(t.v)
+        if (t.h === "40") {
+          delta.bed_target_temper = v
+          delta.bed_temper = Math.max(v, 22)
+        } else {
+          delta.nozzle_target_temper = v
+          delta.nozzle_temper = Math.max(v, 24)
+        }
+      }
+      if (/^G1 E-(?<mm>\d+)/u.test(line) && Number(/E-(?<mm>\d+)/u.exec(line)?.groups?.mm) >= 50) {
+        delta.hw_switch_state = 0
+      }
+    }
+    this.push(delta)
   }
 
   private setFilament(body: Body) {
