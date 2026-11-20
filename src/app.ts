@@ -610,6 +610,7 @@ const overview: WidgetDef = {
   resource: "ui://printers/overview",
   space: PRINTING,
   spaceName: "Printing",
+  size: { aspect: "wide", min: { cols: 4, rows: 2 }, preferred: { cols: 8, rows: 3 }, grows: true },
   tool: "board",
   refresh: [
     StateChanged.type,
@@ -662,6 +663,13 @@ const cameraWidget = (p: Printer): WidgetDef => ({
   resource: `ui://printers/camera-${p.id}`,
   space: PRINTING,
   spaceName: "Printing",
+  size: {
+    aspect: "wide",
+    ratio: 16 / 9,
+    min: { cols: 3, rows: 2 },
+    preferred: { cols: 6, rows: 3 },
+    grows: true,
+  },
   a2ui: () =>
     mcpApp("camera", {
       title: p.name,
