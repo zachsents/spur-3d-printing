@@ -42,8 +42,6 @@ import type { Seen } from "./track.ts"
 import { lineOf, SWAP } from "./board.ts"
 
 const APP = "printers"
-/** The space its widgets suggest. */
-export const PRINTING = "printing"
 
 const PRINTERS: readonly Printer[] = SIM ? SIM_PRINTERS : configured()
 
@@ -892,8 +890,6 @@ const printerWidget = (p: Printer): WidgetDef => ({
   title: p.name,
   surfaces: ["space"],
   resource: `ui://printers/printer-${p.id}`,
-  space: PRINTING,
-  spaceName: "Printing",
   size: { aspect: "auto", min: { cols: 3, rows: 3 }, preferred: { cols: 4, rows: 4 }, grows: true },
   tool: `card_${p.id}`,
   refresh: [
