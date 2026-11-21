@@ -1,6 +1,6 @@
 # spur-3d-printing
 
-Bambu Lab printers on the LAN: live state over MQTT, cameras, AMS filament, job control, and the whole print: slice, plate, check, send, wait, timelapse, with printing and design rules (src/rules.md). Widgets: an overview of every printer and its slots, and a live camera per printer.
+Bambu Lab printers on the LAN: live state over MQTT, cameras, AMS filament, job control, and the whole print: slice, plate, check, send, wait, timelapse, with printing and design rules (src/rules.md). Widgets: one per printer, its state, filament and live camera in one cell.
 
 A [Switch](https://switch.ax) spur, built on [spur-kit](https://github.com/zachsents/spur-kit).
 

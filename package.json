@@ -38,8 +38,7 @@
       "lan:printers"
     ],
     "widgets": [
-      "overview",
-      "camera-*"
+      "printer-*"
     ],
     "space": {
       "id": "printing",

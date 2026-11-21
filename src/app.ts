@@ -1,6 +1,6 @@
 // Bambu printers on the LAN as a spur: their state
 // from one MQTT session each, their cameras, filament, job control and sending a plate. Events for
-// what changes; an overview in Switch's catalog and a live camera per printer.
+// what changes; a widget per printer in Switch's catalog: its line, filament and live camera.
 //
 // Commands go to real printers only with PRINTERS_COMMANDS=on; PRINTERS_SIM=on runs two simulated
 // printers instead, which take every command.
@@ -10,7 +10,7 @@ import { homedir } from "node:os"
 import path from "node:path"
 import { Context, Effect, Layer, Schema } from "effect"
 
-import { answer, AppEvents, defineApp, mcpApp, surface, SWITCH_CATALOG, tool } from "spur-kit"
+import { answer, AppEvents, defineApp, surface, SWITCH_CATALOG, tool } from "spur-kit"
 import type { Draft, WidgetDef } from "spur-kit"
 import { Camera, tlsEye } from "./camera.ts"
 import { COMMANDS, configured, SIM, writeName } from "./config.ts"
@@ -40,7 +40,6 @@ import { bambu, makingTools } from "./making.ts"
 import { track } from "./track.ts"
 import type { Seen } from "./track.ts"
 import { lineOf, SWAP } from "./board.ts"
-import { cameraHtml } from "./view/build.ts"
 
 const APP = "printers"
 /** The space its widgets suggest. */
@@ -339,7 +338,7 @@ const status = tool(
 const board = tool(
   "board",
   {
-    description: "Every printer as its widget draws it.",
+    description: "Every printer at a glance: its line and its filament slots.",
     readOnly: true,
   },
   () =>
@@ -868,15 +867,35 @@ const wait = tool(
 
 // ── Widgets ──
 
-const overview: WidgetDef = {
-  name: "overview",
-  title: "Printers",
+/**
+ * One printer as its widget draws it: its line (mark, name, job, progress, time left) over a Pick
+ * per AMS slot or the external spool, then its camera. Only the user's clients call it.
+ */
+const cardTool = (p: Printer) =>
+  tool(
+    `card_${p.id}`,
+    { description: `${p.name} as its widget draws it.`, readOnly: true, appOnly: true },
+    () =>
+      Effect.gen(function* drawing() {
+        const printers = yield* Printers
+        const e = yield* find(printers, p.id)
+        return { line: lineOf(printers.view(e)), camera: { printer: p.id } }
+      }),
+  )
+
+const cards = PRINTERS.map(cardTool)
+
+// A printer is one cell: its line and filament over its live camera. Every printer's widget has
+// the same size, so they sit side by side, their cameras alike.
+const printerWidget = (p: Printer): WidgetDef => ({
+  name: `printer-${p.id}`,
+  title: p.name,
   surfaces: ["space"],
-  resource: "ui://printers/overview",
+  resource: `ui://printers/printer-${p.id}`,
   space: PRINTING,
   spaceName: "Printing",
-  size: { aspect: "wide", min: { cols: 4, rows: 2 }, preferred: { cols: 8, rows: 3 }, grows: true },
-  tool: "board",
+  size: { aspect: "auto", min: { cols: 3, rows: 3 }, preferred: { cols: 4, rows: 4 }, grows: true },
+  tool: `card_${p.id}`,
   refresh: [
     StateChanged.type,
     JobStarted.type,
@@ -887,21 +906,21 @@ const overview: WidgetDef = {
     PrinterError.type,
     SlotsChanged.type,
   ],
-  // A Row per printer in Switch's catalog, over a Pick per slot that swaps its filament.
   a2ui: () =>
-    surface("overview", SWITCH_CATALOG, [
-      { id: "root", component: "Lines", children: { componentId: "printer", path: "/printers" } },
+    surface("printer", SWITCH_CATALOG, [
+      { id: "root", component: "Stack", children: ["lines", "camera"] },
+      { id: "lines", component: "Lines", children: ["line"] },
       {
-        id: "printer",
+        id: "line",
         component: "Row",
-        label: { "@path": "label" },
-        mark: { "@path": "mark" },
-        detail: { "@path": "detail" },
-        alert: { "@path": "alert" },
-        values: { "@path": "values" },
-        progress: { "@path": "progress" },
-        endsAt: { "@path": "endsAt" },
-        children: { componentId: "cell", path: "cells" },
+        label: { "@path": "/line/label" },
+        mark: { "@path": "/line/mark" },
+        detail: { "@path": "/line/detail" },
+        alert: { "@path": "/line/alert" },
+        values: { "@path": "/line/values" },
+        progress: { "@path": "/line/progress" },
+        endsAt: { "@path": "/line/endsAt" },
+        children: { componentId: "cell", path: "/line/cells" },
       },
       {
         id: "cell",
@@ -915,32 +934,15 @@ const overview: WidgetDef = {
         groups: SWAP,
         action: "set_filament",
       },
+      {
+        id: "camera",
+        component: "Feed",
+        action: "camera",
+        args: { "@path": "/camera" },
+        every: 1000,
+        ratio: 16 / 9,
+      },
     ]),
-}
-
-// Built when the spur starts: Bun runs no macros from an installed package.
-const html = cameraHtml()
-
-const cameraWidget = (p: Printer): WidgetDef => ({
-  name: `camera-${p.id}`,
-  title: p.name,
-  surfaces: ["space"],
-  resource: `ui://printers/camera-${p.id}`,
-  space: PRINTING,
-  spaceName: "Printing",
-  size: {
-    aspect: "wide",
-    ratio: 16 / 9,
-    min: { cols: 2, rows: 1 },
-    preferred: { cols: 6, rows: 3 },
-    grows: true,
-  },
-  a2ui: () =>
-    mcpApp("camera", {
-      title: p.name,
-      html: html.replace("__PRINTER__", p.id).replaceAll("__APP__", APP),
-      allowedTools: [`${APP}_camera`, `${APP}_status`],
-    }),
 })
 
 export const printersApp = defineApp<Printers>({
@@ -969,7 +971,8 @@ export const printersApp = defineApp<Printers>({
     unloadTool,
     rename,
     ...makingTools,
+    ...cards,
   ],
   events: EVENTS,
-  widgets: [overview, ...PRINTERS.map(cameraWidget)],
+  widgets: PRINTERS.map(printerWidget),
 })

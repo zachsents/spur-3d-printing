@@ -1,4 +1,4 @@
-// The overview as Switch's house components draw it: a Row per printer (its mark, name, what's under
+// A printer's line as Switch's house components draw it: a Row (its mark, name, what's under
 // it, progress and time left) over a Pick per AMS slot or the external spool, each swapping its
 // filament with set_filament.
 import type { View } from "./state.ts"
