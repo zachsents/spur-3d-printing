@@ -98,19 +98,60 @@ const cellsOf = (v: View): Cell[] => {
   ]
 }
 
-export const lineOf = (v: View): Line => {
+const two = (n: number) => String(n).padStart(2, "0")
+
+/** Minutes as a clock: "1:12". */
+const clock = (minutes: number) => `${Math.floor(minutes / 60)}:${two(minutes % 60)}`
+
+/** A time of day: "12:23 AM". */
+const timeOf = (ms: number) =>
+  new Date(ms).toLocaleTimeString("en-US", { hour: "numeric", minute: "2-digit" })
+
+/** Where it's at, as its plate says it: "Printing 43% · 1:12 left", "Done 12:23 AM", "Idle". */
+const stateOf = (v: View, doneAt: number | null) => {
+  switch (v.phase) {
+    case "printing": {
+      return `Printing ${v.percent}% · ${clock(v.minutesLeft)} left`
+    }
+    case "preparing": {
+      return v.stage ?? "Preparing"
+    }
+    case "paused": {
+      return "Paused"
+    }
+    case "finished": {
+      return doneAt === null ? "Done" : `Done ${timeOf(doneAt)}`
+    }
+    case "failed": {
+      return "Failed"
+    }
+    case "cancelled": {
+      return "Cancelled"
+    }
+    case "offline": {
+      return "Offline"
+    }
+    case "idle": {
+      throw new Error('Not implemented yet: "idle" case')
+    }
+    default: {
+      return "Idle"
+    }
+  }
+}
+
+/** Its line: its name, and what's wrong, else where it's at (`doneAt`: when its last job ended). */
+export const lineOf = (v: View, doneAt: number | null = null): Line => {
   const active = ACTIVE.has(v.phase)
   const wrong = v.errors.map((a) => a.text ?? a.code).find((t) => t !== "")
-  const stage = v.phase === "printing" ? undefined : v.stage
-  // What's under the name: what's wrong, else the step it's on, else its job.
-  const detail = wrong ?? (active ? (stage ?? v.file) : v.file) ?? ""
+  const detail = wrong ?? stateOf(v, doneAt)
   return {
     id: v.id,
     label: v.name,
     mark: markOf(v),
     detail,
     alert: wrong !== undefined,
-    values: active ? [`${v.percent}%`] : [],
+    values: [],
     progress: active ? v.percent : null,
     endsAt: active ? v.endsAt : null,
     cells: cellsOf(v),

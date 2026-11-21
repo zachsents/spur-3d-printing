@@ -148,6 +148,8 @@ export class Printers extends Context.Service<
     readonly card: Card
     /** Heat holds, by printer id. */
     readonly holds: Map<string, Hold>
+    /** When a printer's last job finished, as seen since start; null if not seen. */
+    readonly doneAt: (id: string) => number | null
   }
 >()("switch/printers/Printers") {
   static readonly layer = (options: { readonly activities?: LiveActivities } = {}) =>
@@ -222,6 +224,8 @@ export class Printers extends Context.Service<
         }
 
         const seen = new Map<string, Seen>()
+        /** When each printer's last job finished, as seen here: its plate's "Done 12:23 AM". */
+        const doneAt = new Map<string, number>()
         /** What changed since this printer's last report, as events and the print's activity. */
         const step = (e: Entry) => {
           const v = view(e)
@@ -231,6 +235,9 @@ export class Printers extends Context.Service<
             seen.set(v.id, out.seen)
           }
           for (const d of out.drafts) {
+            if (d.type === JobFinished.type) {
+              doneAt.set(v.id, Date.now())
+            }
             emit(d)
           }
           if (out.activity) {
@@ -267,7 +274,13 @@ export class Printers extends Context.Service<
             }
           }),
         )
-        return { entries, view, card: SIM ? simCard : ftpsCard, holds }
+        return {
+          entries,
+          view,
+          card: SIM ? simCard : ftpsCard,
+          holds,
+          doneAt: (id: string) => doneAt.get(id) ?? null,
+        }
       }),
     )
 }
@@ -342,7 +355,11 @@ const board = tool(
   () =>
     Effect.gen(function* drawing() {
       const printers = yield* Printers
-      return { printers: printers.entries.map((e) => lineOf(printers.view(e))) }
+      return {
+        printers: printers.entries.map((e) =>
+          lineOf(printers.view(e), printers.doneAt(e.printer.id)),
+        ),
+      }
     }),
 )
 
@@ -877,20 +894,29 @@ const cardTool = (p: Printer) =>
       Effect.gen(function* drawing() {
         const printers = yield* Printers
         const e = yield* find(printers, p.id)
-        return { line: lineOf(printers.view(e)), camera: { printer: p.id } }
+        return {
+          line: lineOf(printers.view(e), printers.doneAt(e.printer.id)),
+          camera: { printer: p.id },
+        }
       }),
   )
 
 const cards = PRINTERS.map(cardTool)
 
-// A printer is one cell: its line and filament over its live camera. Every printer's widget has
-// the same size, so they sit side by side, their cameras alike.
+// A printer is one cell: its live camera and its line (its name, where it's at). Every printer's
+// widget keeps the camera's frame, so they sit alike.
 const printerWidget = (p: Printer): WidgetDef => ({
   name: `printer-${p.id}`,
   title: p.name,
   surfaces: ["space"],
   resource: `ui://printers/printer-${p.id}`,
-  size: { aspect: "auto", min: { cols: 3, rows: 3 }, preferred: { cols: 4, rows: 4 }, grows: true },
+  size: {
+    aspect: "wide",
+    ratio: 16 / 9,
+    min: { cols: 3, rows: 2 },
+    preferred: { cols: 4, rows: 3 },
+    max: { cols: 6, rows: 4 },
+  },
   tool: `card_${p.id}`,
   refresh: [
     StateChanged.type,
